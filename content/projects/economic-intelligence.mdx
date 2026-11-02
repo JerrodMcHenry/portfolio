@@ -4,50 +4,73 @@ import Field from "@/components/case-study/Field";
 
 <CaseStudySection id="executive-overview" title="Executive Overview">
 
-Economic Intelligence is a backend, data-oriented platform for economic
-analysis, built around reliable public economic data, deterministic
-transformations, and explicit data contracts — with AI intentionally
-deferred until that deterministic core is independently correct.
+Economic Intelligence is a full-stack application for retrieving,
+versioning, analyzing, and explaining U.S. macroeconomic data. Its
+consumer-facing product is branded **MacroChipz**. It's organized into
+four areas, Inflation, Jobs, Rates, and Housing, built on first-party
+government data.
 
-This case study covers its architecture, the engineering decisions behind
-its error handling and data layer, and how it draws a hard line between
-deterministic domain logic and probabilistic AI.
+The project is built around one principle: **deterministic software owns
+every canonical number.** Ingestion, transformations, comparisons, and
+methodology outputs are plain, tested code. The one AI feature, an
+optional LLM "Analyst," can explain results the backend already computed,
+but it can't produce or change them.
+
+**Status:** the application is not deployed. It's packaged as a single
+Docker image, and CI validates it for a restricted, password-gated demo.
+No live URL exists yet.
 
 </CaseStudySection>
 
 <CaseStudySection id="system-overview" title="System Overview">
 
-The system is built on Python 3.12, FastAPI, PostgreSQL, SQLAlchemy, and
-Alembic, and integrates with the FRED (Federal Reserve Economic Data) REST
-API via `httpx` to retrieve and synchronize economic-series observations.
+### Backend
 
-Core capabilities include:
+- Python 3.12, FastAPI, synchronous SQLAlchemy 2, Alembic, and
+  PostgreSQL (psycopg 3), with hash-locked dependencies.
+- Provider clients for BLS, BEA, U.S. Treasury yield curves, and Census
+  building permits. The original FRED integration is still in the code
+  but inactive: Inflation and Jobs now read BLS and BEA directly.
+- Deterministic domain logic:
+  - transformations: absolute change, percent change, and moving averages
+  - comparisons: exact-date alignment, spreads, and Pearson correlation
+  - per-area monitors with frozen, versioned methodologies
+- Release-calendar tracking and release-driven processing.
+- Append-only observation versioning, with point-in-time replay.
 
-- retrieving economic-series observations and their metadata
-- synchronizing FRED observations into PostgreSQL
-- deterministic transformations — absolute change, percent change, and
-  moving average
-- comparing two economic series with exact-date alignment, spread
-  calculation, and Pearson correlation
-- composing these transformations into an analysis pipeline
+### Frontend
 
-Every one of these is pure, deterministic software: given the same
-inputs, the outputs don't change.
+- React 19 with React Router 7 (prerendered, no server-side rendering),
+  Vite, TypeScript, and Tailwind CSS.
+- A typed API client calls the backend on the same origin.
+- The frontend renders backend-computed values only. Guard tests on both
+  sides fail CI if economic calculations appear in frontend code.
 
 </CaseStudySection>
 
 <CaseStudySection id="architecture" title="Architecture">
 
-The codebase is organized around a conventional layered structure: an API
-layer, a services layer, repositories, Pydantic models for validation and
-serialization, pure domain functions for the actual calculations, and
-centralized configuration.
+The backend follows a **Route → Service → Repository / Client**
+structure, with pure domain functions underneath:
 
-That separation matters here specifically because the domain functions —
-the transformations and comparisons above — are kept pure and independent
-of the API and persistence layers. They can be tested and reasoned about
-without a database or an HTTP request in the picture, and AI, if and when
-it's introduced, sits outside this layer entirely rather than inside it.
+1. **API routes** validate requests with Pydantic models and map failures
+   to explicit HTTP responses.
+2. **Services** orchestrate a use case: ingest a release, compute a
+   monitor, or build an explanation packet.
+3. **Repositories** own all database access. **Clients** own all
+   external-provider access, through a shared, bounded HTTP layer.
+4. **Domain functions** perform every calculation as plain functions with
+   no database or HTTP dependency, so they can be tested in isolation.
+
+One Docker image serves everything. A multi-stage build compiles the
+frontend with Node, installs the Python app from hash-locked
+requirements, and runs as a non-root user. The same image runs the web
+server, database migrations, and operational commands. That means there
+is exactly one artifact to build, test, and eventually deploy.
+
+The project documents its reasoning as it goes: 37 Architecture Decision
+Records and an engineering journal record each significant decision,
+including the rejected alternatives.
 
 </CaseStudySection>
 
@@ -55,42 +78,39 @@ it's introduced, sits outside this layer entirely rather than inside it.
 
 <CaseStudyCallout
   kind="decision"
-  title="Map infrastructure failures to explicit, categorized errors instead of letting them leak through"
+  title="Compare series only on exact matching dates"
 >
 
 <Field label="Problem">
 
-A backend that talks to an external API (FRED) and a database has several
-distinct ways to fail — provider authentication errors, database
-operational errors, integrity conflicts, and generic SQLAlchemy failures,
-on top of ordinary invalid input. Left unhandled, those surface as
-inconsistent, unhelpful errors.
+Comparing two economic series requires pairing their observations. The
+series are often released on different schedules, so the dates don't
+always line up.
 
 </Field>
 
 <Field label="Alternatives">
 
-Rely on framework default exception handling and return generic 500
-responses, or catch and log without categorizing what actually failed.
+Pair observations by array position, match the nearest date within some
+tolerance, or interpolate missing values.
 
 </Field>
 
 <Field label="Why">
 
-Explicitly mapping each failure class — FRED authentication/provider
-failure, database operational errors, integrity conflicts, generic
-SQLAlchemy failures, invalid date/window input, and structural validation
-failures — to specific handling keeps the deterministic core auditable:
-every known failure mode has a defined, testable behavior instead of an
-implicit one.
+Pairing by array position is simply incorrect once the series diverge.
+Nearest-date matching needs a tolerance that would be an unsupported
+claim about the data. Interpolation invents values that were never
+published. An exact-date inner join only compares numbers that actually
+exist.
 
 </Field>
 
 <Field label="Tradeoffs">
 
-This is more mapping code to write and maintain, and it means
-deliberately thinking through the failure surface of every new external
-dependency instead of leaving it to default behavior.
+Comparisons can contain fewer data points than a looser match would
+produce. That's accepted in exchange for never comparing fabricated or
+misaligned values.
 
 </Field>
 
@@ -98,214 +118,302 @@ dependency instead of leaving it to default behavior.
 
 <CaseStudyCallout
   kind="decision"
-  title="Defer AI-assisted interpretation until the deterministic core is independently correct"
+  title="Version every observation and make replay refuse rather than guess"
 >
 
 <Field label="Problem">
 
-Economic Intelligence's purpose is reliable, reproducible analysis.
-Introducing AI-assisted interpretation before the deterministic core —
-ingestion, transformations, comparisons — is independently verified risks
-letting AI-generated explanations mask bugs in the underlying
-calculations.
+Government data gets revised after release. A methodology result shown
+last month may have been computed from numbers that have since changed,
+so "what did the system know then?" needs a real answer.
 
 </Field>
 
 <Field label="Alternatives">
 
-Build AI-assisted interpretation features in parallel with the core data
-pipeline, or add AI early to make the product feel more complete sooner.
+Version the main observations table in place, use a full bitemporal
+model, or fall back to current values when history is missing.
 
 </Field>
 
 <Field label="Why">
 
-Sequencing it this way means the deterministic core can be tested and
-trusted on its own terms first. When AI-assisted interpretation is
-introduced, it's added as a bounded layer on top of something already
-known to be correct, not asked to compensate for something that isn't.
+Every write goes through one writer that records it in an append-only
+`observation_versions` table as inserted, revised, or unchanged. Replay
+re-executes the frozen methodology against the data as it existed at a
+point in time. If that history doesn't exist, replay returns
+`NOT_REPLAYABLE` instead of quietly substituting today's numbers.
+
+A full bitemporal model was rejected as dishonest, given what the
+current providers actually supply.
 
 </Field>
 
 <Field label="Tradeoffs">
 
-The system takes longer to reach AI-assisted features and looks less
-complete in the interim — but the alternative is a probabilistic layer
-sitting on top of an unverified deterministic one.
+More storage and a stricter single-writer rule. Golden-vector tests pin
+each methodology's outputs, rather than a runtime methodology registry.
 
 </Field>
 
 </CaseStudyCallout>
 
-Additional engineering decisions — for example, the specific approach to
-schema migrations with Alembic, or the composable-pipeline design — will
-be documented here as they're written up in more detail.
+<CaseStudyCallout
+  kind="decision"
+  title="Let the AI Analyst explain canonical results without being able to change them"
+>
+
+<Field label="Problem">
+
+An LLM explanation is useful, but if it can reach the database, call
+tools, or invent sources, it can quietly become the authority on the
+numbers it's supposed to explain.
+
+</Field>
+
+<Field label="Alternatives">
+
+Revive the earlier tool-calling orchestration, give the model read-only
+database tools, accept context supplied by the browser, or rely on the
+prompt to keep the model in bounds.
+
+</Field>
+
+<Field label="Why">
+
+The server builds a fixed evidence packet from canonical results. The
+Analyst makes one generation per request, with no tools. Its output is
+schema-validated, and any cited evidence ID that wasn't in the packet is
+dropped server-side.
+
+An architecture test checks the Analyst's import graph to guarantee it
+has no path to the database. The control lives in code structure, not in
+the prompt.
+
+</Field>
+
+<Field label="Tradeoffs">
+
+The Analyst can only discuss what's in its packet, so it can't answer
+open-ended questions. Without provider credentials, the feature reports
+itself unavailable and every page still works.
+
+</Field>
+
+</CaseStudyCallout>
+
+<CaseStudyCallout
+  kind="decision"
+  title="Ship one container behind a fail-closed access gate, and never deploy from CI"
+>
+
+<Field label="Problem">
+
+The application needed a restricted demo deployment that couldn't be
+reached anonymously, and that couldn't drift between what was tested and
+what runs.
+
+</Field>
+
+<Field label="Alternatives">
+
+A separate static site for the frontend with client-side password
+protection, platform IP allow-listing, an edge access service that would
+require a custom domain, or a separate reverse-proxy gateway.
+
+</Field>
+
+<Field label="Why">
+
+A static site can't actually enforce authentication, so the frontend
+moved into the same container as the API. An HTTP Basic access gate now
+covers every route except `/health`. Production mode is always
+restricted: a missing password or operator token makes the app return
+503 rather than start open.
+
+CI builds and checks this exact image but never deploys it. Deployment
+is a deliberate, separate step.
+
+</Field>
+
+<Field label="Tradeoffs">
+
+HTTP Basic is a minimal gate for a private demo, not user accounts. One
+container also means frontend and backend always deploy together.
+
+</Field>
+
+</CaseStudyCallout>
+
+<CaseStudyCallout
+  kind="decision"
+  title="Map infrastructure failures to explicit, categorized errors"
+>
+
+<Field label="Problem">
+
+A backend that depends on external providers and a database can fail in
+several distinct ways. Left to framework defaults, those surface as
+inconsistent 500s.
+
+</Field>
+
+<Field label="Alternatives">
+
+Rely on default exception handling, or catch and log errors without
+categorizing them.
+
+</Field>
+
+<Field label="Why">
+
+Each failure class gets defined, testable handling:
+
+- provider authentication or availability errors
+- database operational errors
+- integrity conflicts
+- invalid input
+
+For example, a provider authentication failure becomes a 503 rather than
+leaking the provider's raw error.
+
+</Field>
+
+<Field label="Tradeoffs">
+
+More mapping code to maintain, and every new dependency's failure modes
+must be thought through deliberately.
+
+</Field>
+
+</CaseStudyCallout>
 
 </CaseStudySection>
 
 <CaseStudySection id="production-engineering" title="Production Engineering">
 
-Economic Intelligence has substantial automated test coverage; an exact
-count isn't published here since it isn't independently verified for this
-portfolio. Production-engineering evidence includes explicit validation
-and structural-validation handling for invalid date/window input, the
-categorized exception-mapping work described above, and a body of
-architecture documentation: an Engineering Journal, current architecture
-documentation, request-flow documentation, and Architecture Decision
-Records.
+### Continuous integration
 
-That documentation is itself a production-engineering signal — the
-project treats explaining *why* the system is built the way it is as part
-of maintaining it, not an afterthought.
+Two GitHub Actions workflows run on every push and pull request:
+
+- **CI.**
+  - The backend suite runs against a real PostgreSQL 16 service
+    container, installing dependencies with hash verification.
+  - The frontend job runs tests, type checking, linting, and a production
+    build.
+- **Container.** Builds the production image, then checks that it:
+  - runs as non-root, contains the frontend, and leaves out test tooling
+  - migrates a fresh database, and treats a second migration as a no-op
+  - boots in production mode and passes health checks and a smoke test
+  - logs no leaked credentials
+  - fails closed with a 503 when started without required secrets
+
+Neither workflow deploys anything, by design.
+
+### Testing
+
+At the time of writing, the repository has 117 backend test files and 87
+frontend test files. Integration and API tests run against a real,
+migrated PostgreSQL database and refuse to run against anything that
+isn't a dedicated test database. Architecture tests check import
+boundaries, such as the Analyst having no database access, and the
+backend-only-calculation rule.
+
+### Operational safety
+
+- **Schema checks.** The app treats the database schema as compatible
+  only when its migration revision exactly matches the code. `/health`
+  (is the process up?) is kept separate from `/readiness` (can it serve
+  correctly?).
+- **Protected writes.** Write and sync routes require a shared-secret
+  operator token.
+- **Request hardening.** Middleware adds security headers, body-size
+  limits, and request IDs.
+- **Data-rights review.** A provider-terms review led to removing
+  FRED-derived sample data and adding retrieval citations required by BLS
+  terms. One provider's terms are still marked for human review.
 
 </CaseStudySection>
 
 <CaseStudySection id="ai-engineering" title="AI Engineering">
 
-Economic Intelligence is explicit about a boundary: **AI is probabilistic
-infrastructure, not an authority over deterministic application
-correctness.** Economic calculations, validation, permissions, canonical
-state, and deterministic analysis results are not things AI is allowed to
-control.
+The rule throughout is that **AI is probabilistic infrastructure, not an
+authority over canonical results.** The project reached its current
+design partly by building AI the wrong way first.
 
-AI is intended only as a later, optional layer for bounded interpretation
-and explanation on top of results the deterministic core already
-produced — and the deterministic application is designed to remain
-correct if that AI layer is unavailable entirely.
+- **An early tool-calling design failed its own acceptance gate.** In
+  live trials of dynamic tool-schema shaping, roughly 60% of later-round
+  calls requested a series outside the offered set. That design was
+  recorded as failed and reverted, and the documentation says so rather
+  than hiding it.
+- **The current Analyst is deliberately narrow.** It gets one generation,
+  a server-built evidence packet, no tools, and no database path. Its
+  output is schema-validated and its citations are re-checked
+  server-side. The superseded tool-calling route stays in the code but is
+  never routed in production.
+- **It has a documented evaluation.** A recorded 15-case live evaluation
+  went from 10 to 13 passing cases after a prompt revision. That's a
+  small, point-in-time result, not a benchmark.
+- **The application doesn't depend on the AI.** Without provider
+  configuration, the Analyst reports itself unavailable and every page
+  still renders from deterministic data.
 
 </CaseStudySection>
 
 <CaseStudySection id="failures-debugging" title="Real Failures & Debugging">
 
-<CaseStudyCallout kind="failure" title="Python interpreter mismatch">
+<CaseStudyCallout
+  kind="failure"
+  title="The container's start command had never actually been run"
+>
 
 <Field label="Symptom">
 
-The local environment resolved to a different Python interpreter than the
-one the project targets (3.12), leading to inconsistent behavior between
-environments.
-
-</Field>
-
-<Field label="Investigation">
-
-Traced which interpreter the project's tooling was actually resolving to,
-and compared it against the intended 3.12 environment.
+The first real execution of the Dockerfile's start command failed with
+"Got unexpected extra arguments," followed by a list of filenames from
+the app directory.
 
 </Field>
 
 <Field label="Root cause">
 
-The environment wasn't pinned explicitly enough to guarantee the correct
-interpreter was used every time.
+An unquoted `${FORWARDED_ALLOW_IPS:-*}` default was glob-expanded by the
+shell into the filenames in `/app`.
 
-</Field>
-
-<Field label="Fix">
-
-Standardized on an explicit, project-pinned Python 3.12 environment.
-
-</Field>
-
-<Field label="Verification">
-
-Confirmed the intended interpreter was used consistently afterward.
-
-</Field>
-
-<Field label="Lesson">
-
-Explicit environment pinning matters even on a single-developer project —
-"works on my machine" failures aren't only a multi-developer problem.
-
-</Field>
-
-</CaseStudyCallout>
-
-<CaseStudyCallout kind="failure" title="Tracked egg-info artifacts">
-
-<Field label="Symptom">
-
-Generated Python packaging metadata (`*.egg-info`) ended up committed to
-the repository.
+The same investigation found a second defect. A platform-style
+`postgresql://` URL resolved to a database driver the image doesn't
+ship, so migrations crashed and readiness returned a bare 500.
 
 </Field>
 
 <Field label="Investigation">
 
-Noticed generated packaging output appearing in version control where
-only source should be.
+With no Docker available, the start command was reproduced in an
+image-equivalent environment: the exact files the image copies, a clean
+virtual environment without dev dependencies, an empty shell
+environment, and the command string parsed straight out of the
+Dockerfile.
 
 </Field>
 
-<Field label="Root cause">
+<Field label="Correction">
 
-Build and packaging artifacts weren't excluded from version control from
-the start.
-
-</Field>
-
-<Field label="Fix">
-
-Removed the tracked artifacts and added them to `.gitignore`.
+Quoted both shell expansions. Normalized driverless Postgres URLs to the
+installed driver in configuration.
 
 </Field>
 
 <Field label="Verification">
 
-Confirmed the repository stayed clean after rebuilding the package
-locally.
+A test now executes the real start command, with a stub server. It fails
+on the old line and passes on the new one. URL-normalization tests were
+added, and the container workflow deliberately uses a driverless URL.
 
 </Field>
 
 <Field label="Lesson">
 
-Exclude build and packaging output from version control before it has a
-chance to get committed, not after.
-
-</Field>
-
-</CaseStudyCallout>
-
-<CaseStudyCallout kind="failure" title="FRED API key exposure and rotation">
-
-<Field label="Symptom">
-
-A FRED API key ended up somewhere it shouldn't have been exposed.
-
-</Field>
-
-<Field label="Investigation">
-
-Identified where and how the key had been exposed.
-
-</Field>
-
-<Field label="Root cause">
-
-Secret handling wasn't sufficiently separated from tracked files and
-configuration.
-
-</Field>
-
-<Field label="Fix">
-
-Rotated the exposed key and moved secret handling to untracked,
-environment-based configuration.
-
-</Field>
-
-<Field label="Verification">
-
-Confirmed the old key no longer worked and that the new key was sourced
-only from untracked configuration.
-
-</Field>
-
-<Field label="Lesson">
-
-Treat any credential that touches a repository as compromised the moment
-it's exposed — rotate first, investigate the cause after.
+A command nobody has executed is a hypothesis.
 
 </Field>
 
@@ -313,50 +421,156 @@ it's exposed — rotate first, investigate the cause after.
 
 <CaseStudyCallout
   kind="failure"
-  title="Database and provider error handling was implicit"
+  title="Two architecture guards disagreed, and main shipped red"
 >
 
 <Field label="Symptom">
 
-Database and external-API failures — FRED authentication/provider issues,
-database operational errors, integrity conflicts — had no consistent,
-categorized handling path early on.
-
-</Field>
-
-<Field label="Investigation">
-
-Reviewed the failure modes the application could actually encounter from
-its database and external-API dependencies.
+The backend's architecture test, which forbids economic calculations in
+the frontend, failed on two harmless layout calculations. Two earlier
+feature commits had been merged with the backend suite failing.
 
 </Field>
 
 <Field label="Root cause">
 
-The data layer hadn't yet mapped infrastructure-level exceptions to
-explicit, categorized handling — see the related
-[engineering decision](#engineering-decisions).
+The backend guard scanned all frontend code for a generic `* 100`
+pattern, while its frontend twin scanned only the Rates modules. The
+generic pattern produced false positives. The backend suite also hadn't
+been run during those feature increments.
 
 </Field>
 
-<Field label="Fix">
+<Field label="Investigation">
 
-Added explicit exception mapping for FRED authentication/provider
-failure, database operational errors, integrity conflicts, and generic
-SQLAlchemy failures.
+The failures pointed at layout code (`cssUnits.ts` and
+`SurveyThreshold.tsx`), not economic logic. That exposed that the two
+guards were scanning different scopes.
+
+</Field>
+
+<Field label="Correction">
+
+Patterns that name an economic concept still scan everything, while the
+generic pattern is limited to Rates modules, so the two guards now agree
+by construction. One scanner function is shared by the guard and its
+regression tests.
 
 </Field>
 
 <Field label="Verification">
 
-Covered by automated tests.
+Added regression cases that were mutation-checked. The guard suite went
+from one failure to fully passing.
 
 </Field>
 
 <Field label="Lesson">
 
-Error handling for external dependencies needs to be designed
-deliberately; default framework behavior isn't a substitute for it.
+A guard you don't run is a comment.
+
+</Field>
+
+</CaseStudyCallout>
+
+<CaseStudyCallout
+  kind="failure"
+  title="The Jobs page showed a future release as the latest data"
+>
+
+<Field label="Symptom">
+
+During browser acceptance testing on a fresh database, the Jobs page
+read "Latest data detected: December 4, 2026," a release that hadn't
+happened yet.
+
+</Field>
+
+<Field label="Root cause">
+
+The component took the first item from a list the backend sorts newest
+first, and that list includes future scheduled releases. Every test
+fixture had used past dates, so this was never exercised.
+
+</Field>
+
+<Field label="Investigation">
+
+Found through acceptance testing against real calendar data, not unit
+tests.
+
+</Field>
+
+<Field label="Correction">
+
+The component now selects the most recent release scheduled on or
+before today. `today` is injectable, so the logic is testable.
+
+</Field>
+
+<Field label="Verification">
+
+A new component test covers three cases: skipping a future release,
+counting today as arrived, and an empty state. It fails against the old
+logic.
+
+</Field>
+
+<Field label="Lesson">
+
+Test with the real calendar.
+
+</Field>
+
+</CaseStudyCallout>
+
+<CaseStudyCallout
+  kind="failure"
+  title="The access-gate test could only see 5 of 33 routes"
+>
+
+<Field label="Symptom">
+
+A test asserting that every route rejects anonymous requests found only
+5 routes, and tripped its own minimum of 30.
+
+</Field>
+
+<Field label="Root cause">
+
+The installed FastAPI version wraps included routers in a private type,
+so walking `app.routes` only finds routes declared directly on the app.
+
+A second issue showed up in the same work: anonymous probes were
+counting toward the failed-login lockout, which then locked out
+legitimate checks.
+
+</Field>
+
+<Field label="Investigation">
+
+Noticed because the test enforced a minimum route count, so an
+under-count was a failure rather than a silent pass.
+
+</Field>
+
+<Field label="Correction">
+
+Routes are now enumerated from the generated OpenAPI schema, which finds
+all 33. Only presented-but-wrong credentials count toward lockout.
+
+</Field>
+
+<Field label="Verification">
+
+The gate test checks at least 30 routes. A separate test pins the
+lockout rule.
+
+</Field>
+
+<Field label="Lesson">
+
+A security test needs to prove it's checking what it claims to check.
 
 </Field>
 
@@ -366,14 +580,29 @@ deliberately; default framework behavior isn't a substitute for it.
 
 <CaseStudySection id="scaling-evolution" title="Scaling & Evolution">
 
-Because the deterministic core doesn't depend on AI being present,
-scaling or evolving the system doesn't have to route through a
-probabilistic bottleneck. New transformations, comparisons, or data
-sources can be added to the deterministic layer on their own schedule,
-and an AI-assisted interpretation layer can be introduced additively on
-top of it later without restructuring the core.
+### Current limitations
 
-No production-scale metrics are published here, because none have been
-independently verified for this portfolio.
+- **Not deployed.** The restricted demo is prepared and validated in CI,
+  but no environment has been provisioned and there's no live URL.
+- **Scheduled maintenance is inactive.** The scheduled ingestion
+  workflow is committed as a disabled template until a production
+  database exists.
+- **Small AI evaluation.** The Analyst's evaluation covers 15 cases. A
+  larger, repeatable evaluation set would be needed before relying on it
+  more broadly.
+- **Some repository docs lag the code.** The README and the main
+  architecture overview predate the move from FRED to first-party data
+  sources.
+
+### Next steps
+
+None of these are implemented yet:
+
+- Deploying the restricted demo as a single container on Render, as
+  planned in the deployment checklist.
+- Activating scheduled release ingestion against that database.
+
+No production traffic or usage metrics exist, because the application
+hasn't been deployed.
 
 </CaseStudySection>

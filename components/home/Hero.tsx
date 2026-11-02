@@ -11,22 +11,24 @@ export default function Hero() {
       <h1>{siteConfig.name}</h1>
       <p className={styles.role}>{siteConfig.tagline}</p>
       <p className={styles.summary}>
-        I&apos;ve spent my career in and around technology from the start. From
-        hands-on technical roles at Apple to customer-facing roles at software
-        companies. Working directly with engineering teams along the way led me
-        to study computer science and software engineering while continuing my
-        career. I now build backend systems and AI-enabled products, including
-        VentureGPS and Economic Intelligence, as I work toward my first
-        professional software engineering role.
+        I build backend systems and AI-enabled products where deterministic
+        code owns correctness: FastAPI and PostgreSQL services, LLM pipelines
+        whose output is validated before it can affect a result, and the
+        tests and documentation behind them. I&apos;m seeking Backend
+        Software Engineer, Software Engineer, and Applied AI Engineer roles.
+      </p>
+      <p className={styles.background}>
+        I came to software engineering from technical and customer-facing
+        roles at Apple and software companies, where working alongside
+        engineering teams led me to study computer science and software
+        engineering.
       </p>
       <div className={styles.actions}>
         <Link href="/projects" className={styles.primary}>
           View Projects
         </Link>
         <Link href="/engineering">Engineering Evidence</Link>
-        {resumeLink ? (
-          <Link href={resumeLink.href}>{resumeLink.label}</Link>
-        ) : null}
+        {resumeLink ? <a href={resumeLink.href}>{resumeLink.label}</a> : null}
       </div>
     </section>
   );

@@ -154,7 +154,7 @@ export const engineeringTopics: EngineeringTopic[] = [
         whyItMatters:
           "Pushing an invariant like uniqueness down to the database means it holds even if application-level validation has a bug, which application code alone can't guarantee.",
         projectApplication:
-          "Economic Intelligence relies on exactly this constraint to keep synchronized FRED observations free of duplicates.",
+          "Economic Intelligence enforces a unique constraint on (series, observation date) to keep synchronized observations free of duplicates.",
         evidence: [
           {
             label: "Economic Intelligence — System Overview",
@@ -274,12 +274,12 @@ export const engineeringTopics: EngineeringTopic[] = [
         whyItMatters:
           "A leaked key is a real incident regardless of whether it was ever used maliciously; the response is rotate first, investigate after.",
         projectApplication:
-          "Economic Intelligence keeps secrets out of version control via a untracked .env file and a committed .env.example template with no real values, and rotated a FRED API key after an earlier exposure.",
+          "Economic Intelligence keeps secrets out of version control via an untracked .env file and a committed .env.example template with no real values; its engineering journal records a FRED API key that was exposed in an AI coding assistant's transcript and rotated.",
         evidence: [
           {
-            label: "Economic Intelligence — Real Failures & Debugging",
-            href: "/projects/economic-intelligence#failures-debugging",
-            kind: "case-study",
+            label: "Economic Intelligence — Engineering journal",
+            href: "https://github.com/JerrodMcHenry/economic-intelligence/blob/main/docs/ENGINEERING_JOURNAL.md",
+            kind: "journal",
           },
         ],
       },
@@ -310,7 +310,7 @@ export const engineeringTopics: EngineeringTopic[] = [
     summary:
       "Deployment, CI/CD, containers, cloud infrastructure, environments, configuration, observability, reliability, and operational concerns.",
     overview:
-      "Deployment, CI/CD, containers, cloud infrastructure, environments, configuration, observability, reliability, and operational concerns. VentureGPS runs GitHub Actions CI on every push and pull request to main, with its Next.js frontend on Vercel and its FastAPI backend and PostgreSQL database on Render; Economic Intelligence doesn't have documented production infrastructure in this portfolio yet, so this section stays close to what's actually verifiable.",
+      "Deployment, CI/CD, containers, cloud infrastructure, environments, configuration, observability, reliability, and operational concerns. VentureGPS runs GitHub Actions CI on every push and pull request to main, with its Next.js frontend on Vercel and its FastAPI backend and PostgreSQL database on Render; Economic Intelligence packages its API and frontend into one Docker image that CI builds, migrates, boots in production mode, and checks for fail-closed behavior, though it hasn't been deployed. This section stays close to what's actually verifiable.",
     concepts: [
       {
         title: "Static-First Build and Deployment",
@@ -323,7 +323,7 @@ export const engineeringTopics: EngineeringTopic[] = [
       },
     ],
     stillLearning:
-      "VentureGPS demonstrates CI and a managed-platform deployment (Vercel and Render), but not containers, and Economic Intelligence has no documented deployment in this portfolio yet — those are gaps I'm aware of, not ones I'm going to paper over with invented infrastructure.",
+      "VentureGPS demonstrates CI and a managed-platform deployment (Vercel and Render); Economic Intelligence demonstrates a CI-validated container image but hasn't been deployed. Neither uses container orchestration, and I'm not going to paper over those gaps with invented infrastructure.",
   },
   {
     slug: "system-design",
@@ -347,11 +347,11 @@ export const engineeringTopics: EngineeringTopic[] = [
         whyItMatters:
           "Building a flashier feature before its foundation is verified means any bug in the foundation stays invisible until it's already influencing something users see.",
         projectApplication:
-          "Economic Intelligence deliberately defers AI-assisted interpretation until its deterministic core — ingestion, transformations, comparisons — is independently correct, rather than building both in parallel.",
+          "Economic Intelligence learned this the hard way: its first AI design — dynamic tool calling — was built early, failed its own acceptance gate, and was reverted. AI returned only as a narrow Analyst layered on top of already-computed deterministic results, with no tools and no database access.",
         evidence: [
           {
-            label: "Economic Intelligence — Engineering Decisions",
-            href: "/projects/economic-intelligence#engineering-decisions",
+            label: "Economic Intelligence — AI Engineering",
+            href: "/projects/economic-intelligence#ai-engineering",
             kind: "case-study",
           },
         ],
@@ -376,7 +376,7 @@ export const engineeringTopics: EngineeringTopic[] = [
         whyItMatters:
           "An LLM is non-deterministic by construction; putting it in control of something that must be correct and reproducible — a score, a permission check, a financial calculation — means the system's correctness now depends on something that can't guarantee it.",
         projectApplication:
-          "VentureGPS's Evidence Engine v1 lets AI research companies and propose source-grounded claims, while deterministic code validates those claims and computes every pillar score, Coverage and Confidence figure, and publish/withhold decision — an architecture built after its earlier engine showed that LLM-generated numeric judgments could survive without supporting evidence. Economic Intelligence keeps all economic calculations, validation, and canonical state deterministic, with AI intended only as a later, bounded interpretation layer.",
+          "VentureGPS's Evidence Engine v1 lets AI research companies and propose source-grounded claims, while deterministic code validates those claims and computes every pillar score, Coverage and Confidence figure, and publish/withhold decision — an architecture built after its earlier engine showed that LLM-generated numeric judgments could survive without supporting evidence. Economic Intelligence keeps all economic calculations, validation, and canonical state deterministic, and its implemented LLM Analyst can only explain results the deterministic layer already computed.",
         evidence: [
           {
             label: "VentureGPS — AI Engineering",
@@ -413,18 +413,18 @@ export const engineeringTopics: EngineeringTopic[] = [
         whyItMatters:
           "A system that silently depends on AI for correctness, not just for a nice-to-have feature, has a hidden availability and correctness dependency on a third-party service.",
         projectApplication:
-          "Economic Intelligence's deterministic core doesn't depend on AI being present at all; AI is scoped as an additive layer, not a load-bearing one.",
+          "Economic Intelligence's deterministic core doesn't depend on AI being present at all; without provider configuration, its Analyst reports itself unavailable and every page still renders from deterministic data.",
         evidence: [
           {
-            label: "Economic Intelligence — Scaling & Evolution",
-            href: "/projects/economic-intelligence#scaling-evolution",
+            label: "Economic Intelligence — AI Engineering",
+            href: "/projects/economic-intelligence#ai-engineering",
             kind: "case-study",
           },
         ],
       },
     ],
     stillLearning:
-      "Economic Intelligence's AI-assisted interpretation layer is deliberately not built yet — the deterministic core came first. VentureGPS's case study documents its staged live evaluations and a measured production latency, but per-analysis token and cost instrumentation and a repeatable evaluation dataset are still open gaps.",
+      "Economic Intelligence's Analyst has only a small, 15-case documented evaluation so far. VentureGPS's case study documents its staged live evaluations and a measured production latency, but per-analysis token and cost instrumentation and a repeatable evaluation dataset are still open gaps.",
     relatedProjectSlugs: ["venturegps", "economic-intelligence"],
   },
 ];

@@ -15,6 +15,18 @@
   max-width: 60ch;
 }
 
+.links {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-6);
+  margin-top: var(--space-4);
+}
+
+.links a {
+  font-weight: 600;
+}
+
 .themes {
   list-style: none;
   display: flex;

@@ -5,13 +5,12 @@ export interface NavItem {
 
 export const siteConfig = {
   name: "Jerrod McHenry",
-  tagline: "From working around software to building it",
+  tagline: "Software Engineer — Backend & Applied AI",
   description:
-    "Software engineering portfolio of Jerrod McHenry: backend systems and production AI, with case studies covering architecture, testing, and security.",
+    "Software engineering portfolio of Jerrod McHenry, seeking Backend Software Engineer, Software Engineer, and Applied AI Engineer roles: backend systems and production AI, with case studies covering architecture, testing, and security.",
   nav: [
     { label: "Projects", href: "/projects" },
     { label: "Engineering", href: "/engineering" },
-    { label: "Videos", href: "/videos" },
     { label: "About", href: "/about" },
   ] as NavItem[],
 };

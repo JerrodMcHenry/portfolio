@@ -7,7 +7,14 @@ export interface CaseStudySection {
 export interface EvidenceLink {
   label: string;
   href: string;
-  kind: "repository" | "live" | "documentation" | "diagram" | "tests" | "video";
+  kind:
+    | "repository"
+    | "live"
+    | "documentation"
+    | "diagram"
+    | "tests"
+    | "ci"
+    | "video";
 }
 
 export interface Project {
@@ -126,19 +133,76 @@ export const projects: Project[] = [
   {
     slug: "economic-intelligence",
     name: "Economic Intelligence",
-    tagline: "Backend platform for reliable economic data analysis",
+    tagline: "Full-stack platform for versioned, explainable economic data",
     summary:
-      "A data-intensive backend built around reliable ingestion, persistence, and deterministic transformation of economic series, with a deliberate boundary between deterministic domain logic and the AI analysis layered on top.",
+      "A FastAPI, PostgreSQL, and React application that ingests first-party government data, versions every observation for point-in-time replay, and computes all results deterministically — with an optional LLM Analyst that can explain those results but structurally cannot change them. Containerized and validated in CI; not yet deployed.",
     themes: [
-      "FastAPI + PostgreSQL",
-      "SQLAlchemy data layer",
-      "External API integration",
+      "FastAPI + PostgreSQL + React",
       "Deterministic domain logic",
-      "Validation & error handling",
-      "Architecture documentation",
+      "Observation versioning & replay",
+      "Bounded LLM Analyst",
+      "Docker + GitHub Actions CI",
+      "Architecture Decision Records",
     ],
     href: "/projects/economic-intelligence",
+    repositoryUrl: "https://github.com/JerrodMcHenry/economic-intelligence",
     caseStudySections: standardCaseStudySections,
-    evidenceLinks: [],
+    evidenceLinks: [
+      {
+        label: "GitHub repository",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence",
+        kind: "repository",
+      },
+      {
+        label: "README",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/blob/main/README.md",
+        kind: "documentation",
+      },
+      {
+        label: "Architecture documentation",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/tree/main/docs/architecture",
+        kind: "documentation",
+      },
+      {
+        label: "Architecture Decision Records",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/tree/main/docs/adr",
+        kind: "documentation",
+      },
+      {
+        label: "ADR-032: Analyst cannot become canonical",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/blob/main/docs/adr/032-analyst-explains-canonical-intelligence-and-cannot-become-it.md",
+        kind: "documentation",
+      },
+      {
+        label: "ADR-030: observation versioning and replay",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/blob/main/docs/adr/030-observation-system-time-versioning-and-deterministic-replay.md",
+        kind: "documentation",
+      },
+      {
+        label: "Engineering journal",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/blob/main/docs/ENGINEERING_JOURNAL.md",
+        kind: "documentation",
+      },
+      {
+        label: "Backend test suite",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/tree/main/tests",
+        kind: "tests",
+      },
+      {
+        label: "CI workflow",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/blob/main/.github/workflows/ci.yml",
+        kind: "ci",
+      },
+      {
+        label: "Container workflow",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/blob/main/.github/workflows/container.yml",
+        kind: "ci",
+      },
+      {
+        label: "Dockerfile",
+        href: "https://github.com/JerrodMcHenry/economic-intelligence/blob/main/Dockerfile",
+        kind: "ci",
+      },
+    ],
   },
 ];

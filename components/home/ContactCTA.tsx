@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { getContactLinks } from "@/data/contact";
 import styles from "./ContactCTA.module.css";
 
@@ -21,7 +20,7 @@ export default function ContactCTA() {
                   <span className="visuallyHidden"> (opens in a new tab)</span>
                 </a>
               ) : (
-                <Link href={link.href}>{link.label}</Link>
+                <a href={link.href}>{link.label}</a>
               )}
             </li>
           ))}

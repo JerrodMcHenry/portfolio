@@ -109,7 +109,7 @@ export const engineeringTopics: EngineeringTopic[] = [
         whyItMatters:
           "Backend architecture decisions — what gets validated, what gets fetched, what the endpoint is allowed to do — determine whether that boundary is trustworthy.",
         projectApplication:
-          "VentureGPS's /analyze-website endpoint accepts a startup's website URL and analyzes it through a dedicated, hardened ingestion path rather than an open fetch.",
+          "VentureGPS accepts a startup's website URL through its authenticated POST /analyze endpoint and retrieves it through a dedicated, SSRF-hardened fetcher rather than an open fetch — the same fetcher its Evidence Engine v1 reuses unchanged.",
         evidence: [
           {
             label: "VentureGPS — Architecture",
@@ -253,7 +253,7 @@ export const engineeringTopics: EngineeringTopic[] = [
         whyItMatters:
           "SSRF is easy to miss because the endpoint \"just fetches a webpage\" — the risk isn't in what the feature does, it's in what the underlying HTTP client is capable of reaching.",
         projectApplication:
-          "VentureGPS's /analyze-website endpoint accepts a startup's website URL and is SSRF-hardened, with dedicated security tests around that boundary.",
+          "VentureGPS fetches user-supplied website URLs server-side through an SSRF-hardened fetcher — scheme allow-listing, private/loopback/link-local/cloud-metadata address rejection, DNS-rebinding-safe IP pinning, bounded redirects, and response-size caps — with dedicated security tests around that boundary.",
         evidence: [
           {
             label: "VentureGPS — Engineering Decisions",
@@ -310,7 +310,7 @@ export const engineeringTopics: EngineeringTopic[] = [
     summary:
       "Deployment, CI/CD, containers, cloud infrastructure, environments, configuration, observability, reliability, and operational concerns.",
     overview:
-      "Deployment, CI/CD, containers, cloud infrastructure, environments, configuration, observability, reliability, and operational concerns. Neither VentureGPS nor Economic Intelligence has documented production infrastructure in this portfolio yet, so this section stays close to what's actually verifiable.",
+      "Deployment, CI/CD, containers, cloud infrastructure, environments, configuration, observability, reliability, and operational concerns. VentureGPS runs GitHub Actions CI on every push and pull request to main, with its Next.js frontend on Vercel and its FastAPI backend and PostgreSQL database on Render; Economic Intelligence doesn't have documented production infrastructure in this portfolio yet, so this section stays close to what's actually verifiable.",
     concepts: [
       {
         title: "Static-First Build and Deployment",
@@ -323,7 +323,7 @@ export const engineeringTopics: EngineeringTopic[] = [
       },
     ],
     stillLearning:
-      "CI/CD pipelines, containers, and cloud infrastructure aren't demonstrated yet for VentureGPS or Economic Intelligence in this portfolio — that's a gap I'm aware of, not one I'm going to paper over with invented infrastructure.",
+      "VentureGPS demonstrates CI and a managed-platform deployment (Vercel and Render), but not containers, and Economic Intelligence has no documented deployment in this portfolio yet — those are gaps I'm aware of, not ones I'm going to paper over with invented infrastructure.",
   },
   {
     slug: "system-design",
@@ -376,7 +376,7 @@ export const engineeringTopics: EngineeringTopic[] = [
         whyItMatters:
           "An LLM is non-deterministic by construction; putting it in control of something that must be correct and reproducible — a score, a permission check, a financial calculation — means the system's correctness now depends on something that can't guarantee it.",
         projectApplication:
-          "VentureGPS keeps its six-pillar scoring methodology fully deterministic and uses AI for research and interpretation around a company, not to compute or override the score. Economic Intelligence keeps all economic calculations, validation, and canonical state deterministic, with AI intended only as a later, bounded interpretation layer.",
+          "VentureGPS's Evidence Engine v1 lets AI research companies and propose source-grounded claims, while deterministic code validates those claims and computes every pillar score, Coverage and Confidence figure, and publish/withhold decision — an architecture built after its earlier engine showed that LLM-generated numeric judgments could survive without supporting evidence. Economic Intelligence keeps all economic calculations, validation, and canonical state deterministic, with AI intended only as a later, bounded interpretation layer.",
         evidence: [
           {
             label: "VentureGPS — AI Engineering",
@@ -424,7 +424,7 @@ export const engineeringTopics: EngineeringTopic[] = [
       },
     ],
     stillLearning:
-      "Economic Intelligence's AI-assisted interpretation layer is deliberately not built yet — the deterministic core came first. VentureGPS's AI-assisted research already exists, but I haven't documented its evaluation, observability, or cost/latency characteristics here yet.",
+      "Economic Intelligence's AI-assisted interpretation layer is deliberately not built yet — the deterministic core came first. VentureGPS's case study documents its staged live evaluations and a measured production latency, but per-analysis token and cost instrumentation and a repeatable evaluation dataset are still open gaps.",
     relatedProjectSlugs: ["venturegps", "economic-intelligence"],
   },
 ];

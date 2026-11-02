@@ -4,71 +4,151 @@ import Field from "@/components/case-study/Field";
 
 <CaseStudySection id="executive-overview" title="Executive Overview">
 
-VentureGPS is a startup intelligence platform built to help founders and
-investors make better long-term decisions using structured startup
-analysis, rather than gut feel or scattered spreadsheets. It combines a
-deterministic scoring methodology with AI-assisted research, so the number
-an investor sees is reproducible and defensible — not just something a
-language model generated on request.
+VentureGPS is an AI-assisted startup due-diligence application. Given a
+company name and website, it researches public evidence about the company
+and produces a structured assessment across six intelligence pillars. The
+report shows what evidence was found, where it came from, and which areas
+couldn't be assessed from public information.
 
-This case study covers the platform's architecture, the engineering
-decisions behind its scoring system and ingestion pipeline, and how
-deterministic business logic is kept separate from AI-assisted analysis.
+The central engineering problem is simple to state: **how do you let an
+LLM help research a company without letting it quietly become the
+authority on whether that company is good?** VentureGPS's first analysis
+engine relied on LLM-generated numeric judgments, and a documented
+incident showed one of those numbers surviving with no supporting facts
+behind it.
+
+That failure led to **Evidence Engine v1**, a separate, evidence-first
+engine. AI proposes source-grounded claims; deterministic code validates
+those claims, scores what the evidence supports, and withholds assessments
+where it doesn't. Evidence Engine v1 deliberately produces **no overall
+company score**. It reports Evidence Coverage and Confidence as two
+separate measures instead of one number that implies more certainty than
+the evidence supports.
+
+Evidence Engine v1 runs in production behind a server-controlled feature
+flag. The original engine remains available for backward compatibility.
 
 </CaseStudySection>
 
 <CaseStudySection id="system-overview" title="System Overview">
 
-At the center of VentureGPS is the **Startup Profile** — a living history
-of a company that accumulates structured information over time, rather
-than a one-off snapshot. Profiles feed a set of shared intelligence
-features used across the platform: rankings, search, scoring,
-benchmarking, and trend analysis.
+VentureGPS contains two analysis engines with different methodologies.
+They don't share a scoring formula, and neither is a revision of the
+other.
 
-The product is organized around two audiences with different workflows:
+| | Legacy engine | Evidence Engine v1 |
+| --- | --- | --- |
+| Status | Live, kept for compatibility | Live, behind a server flag |
+| Inputs | Website, pitch deck, or text | Company name + website |
+| Dimension judgment | Mostly LLM-chosen 0–10 scores | Deterministic rules over validated claims |
+| Company output | Weighted 0–100 overall score | Coverage + Confidence, no overall score |
+| Thin evidence | Dimension marked unavailable | Pillar explicitly withheld |
 
-- **Founders** — pitch-deck review, fundraising readiness, coaching,
-  progress tracking, benchmarking, data-room review, and
-  investor-readiness workflows.
-- **Investors** — portfolio tracking, discovery filters, watchlists,
-  alerts, memo export, thesis tagging, and saved views.
+### The legacy engine
 
-Not every one of these workflows is at the same level of maturity; they
-describe the product's intended shape rather than a claim that each is
-fully built out.
+The original engine analyzes six fixed pillars, weighted Market 20%,
+Team 20%, Product 20%, Execution 15%, Traction 15%, and Financial Health
+10%. Python code aggregates those pillars into an overall 0–100 score. But
+each dimension's 0–10 score inside a pillar was originally chosen by
+prompting an LLM. The aggregation was deterministic; the judgments it
+aggregated were not.
 
-### Scoring methodology
+The design wasn't naive. Each dimension was tagged Public, Inferred, or
+Private to control whether "Unavailable" was a legal outcome. Evidence
+extraction and scoring ran as two separate LLM calls, so the scoring call
+judged only already-extracted evidence. Low-confidence judgments were
+capped so they couldn't produce a high score. What it lacked was an
+independent check that a number was actually backed by evidence.
+[Real Failures & Debugging](#failures-debugging) covers the incident that
+exposed this.
 
-Every startup is scored across six weighted pillars, producing an overall
-score from 0–100 alongside a confidence rating.
+### Evidence Engine v1
 
-| Pillar | Weight |
-| --- | --- |
-| Market | 20% |
-| Team | 20% |
-| Product | 20% |
-| Execution | 15% |
-| Traction | 15% |
-| Financial Health | 10% |
+Evidence Engine v1 is a clean-slate engine in its own package. No pillar
+definition, dimension, weight, or scoring formula carries over from the
+legacy engine. Its six pillars are Market Opportunity, Product &
+Technology, Team & Leadership, Commercial Traction, Execution & Momentum,
+and Financial & Funding Signals.
 
-Confidence is reported as **Low**, **Medium**, or **High**, and scoring is
-stage-aware — a pre-seed company and a Series B+ company aren't held to
-the same evidentiary bar for, say, traction or financial health. Supported
-stages are Pre-seed, Seed, Series A, and Series B+.
+Its rule is **evidence precedes assessment, and assessment precedes
+scoring**. There is no code path from "the model said so" to a number.
+
+The wider application also includes account-level features such as My
+Analyses, saved startups, and a founder workspace. This case study
+focuses on the analysis engines.
 
 </CaseStudySection>
 
 <CaseStudySection id="architecture" title="Architecture">
 
-VentureGPS is a full-stack product: a Next.js frontend in front of a
-backend intelligence layer responsible for startup scoring, readiness
-summaries, analysis, search, and analytics. A distinct ingestion path
-accepts a startup's website URL and analyzes it through a dedicated
-`/analyze-website` endpoint.
+### Production stack
 
-Because that ingestion path accepts a URL supplied by a user and fetches
-it server-side, it's treated as a security-sensitive boundary rather than
-a convenience feature — see [Engineering Decisions](#engineering-decisions).
+- **Frontend:** Next.js (App Router) and TypeScript, deployed on Vercel.
+- **Authentication:** Clerk. The backend verifies Clerk-issued JWTs
+  itself against Clerk's JWKS (RS256, with issuer and authorized-party
+  checks).
+- **Backend:** FastAPI, Pydantic, and SQLAlchemy, deployed on Render.
+- **Persistence:** PostgreSQL (Render managed), with Alembic migrations.
+- **External providers:** Tavily for search, and OpenAI structured
+  outputs for evidence extraction.
+
+### Layered integration: Route → Service → Adapter → Persistence
+
+Evidence Engine v1 is wired into the product through four layers with one
+direction of dependency:
+
+1. **Route** (`POST /analyze`). This layer is thin. It authenticates the
+   caller, asks `resolve_engine()` which engine to run, delegates, and maps
+   failures to HTTP status codes.
+2. **Analysis Service.** Validates input. A company name and website are
+   required, and anything else is rejected with a 400 before any provider
+   is called. It then runs the analysis and persists the result.
+3. **Engine Adapter.** The *only* place application code constructs real
+   providers and calls the engine's own pipeline. No methodology logic is
+   duplicated at the integration layer.
+4. **Persistence.** Writes one row per analysis to a dedicated
+   `evidence_v1_analyses` table, stamped with its engine and methodology
+   version.
+
+Keeping the engine in its own package (`app/evidence_engine/`), separate
+from the product-integration layer (`app/evidence_v1/`), means it can be
+tested and evaluated in isolation, then wired into the product without
+modification.
+
+### Inside one analysis
+
+1. **Research (probabilistic).** A research plan drives Tavily searches.
+   Results are de-duplicated by normalized URL before retrieval, and pages
+   with byte-identical content are collapsed before extraction.
+2. **Extraction (probabilistic).** An OpenAI structured-output call
+   proposes claim candidates. Each one is a typed fact plus the exact
+   excerpt it came from. Retrieved web content is treated as untrusted data
+   in the prompt, never as instructions.
+3. **Grounding (deterministic).** A candidate's excerpt must appear
+   verbatim in the retrieved source text, or it never becomes a claim.
+4. **Canonicalization (deterministic).** Unambiguous values are normalized,
+   such as `"$52M"` to a bare number and "August 5, 2026" to an ISO date.
+   Ranges, vague quantities, and partial dates are left unchanged. The
+   representation can change, but the evidence never does.
+5. **Semantic-fit validation (deterministic).** This checks that the
+   excerpt supports the *specific* categorical value chosen, not just that
+   the value is schema-valid.
+6. **Duplicates and contradictions (deterministic).** Claims about the
+   same real-world fact share an identity derived from the fact itself,
+   never from the source URL. So five outlets repeating one funding round
+   count as one fact, not five independent confirmations. Claims that
+   disagree are marked disputed instead of being silently reduced to one.
+7. **Scoring and publication (deterministic).** Pillar scores, company
+   Evidence Coverage, Confidence, and every publish/withhold decision are
+   computed in plain Python over validated claims only.
+
+Every claim keeps its provenance: the source, its publisher, and the
+exact excerpt. The report links each piece of evidence back to its
+source.
+
+The analysis runs once, at submission. Opening a report later is a pure
+read of the stored row, so reloading never repeats provider calls and
+never returns a different answer.
 
 </CaseStudySection>
 
@@ -76,42 +156,38 @@ a convenience feature — see [Engineering Decisions](#engineering-decisions).
 
 <CaseStudyCallout
   kind="decision"
-  title="Treat website ingestion as a security boundary, not a convenience feature"
+  title="Build a separate evidence-first engine instead of patching the legacy one"
 >
 
 <Field label="Problem">
 
-Letting a user submit an arbitrary website URL for analysis means the
-server ends up fetching a URL it doesn't control. Without safeguards,
-that request path can be abused to reach internal services, cloud
-metadata endpoints, or other network resources that were never meant to
-be reachable from the outside.
+The legacy engine's failure was structural. The same LLM call decided
+both *whether evidence was sufficient* and *what the number should be*.
+Patching one dimension fixed one symptom, not the failure mode.
 
 </Field>
 
 <Field label="Alternatives">
 
-Fetch whatever URL the user submits and rely on downstream code to behave
-correctly; or route ingestion through a third-party proxy or screenshot
-service instead of fetching server-side at all.
+Keep adding deterministic overrides to individual dimensions as new
+instances of the same failure appeared.
 
 </Field>
 
 <Field label="Why">
 
-Handling this in-house — with explicit SSRF protections around the
-`/analyze-website` endpoint and dedicated security tests — keeps full
-control over what the ingestion path is and isn't allowed to reach,
-without taking on a dependency (and its cost) for something the
-application can own directly.
+A separate engine could make the failure mode structurally impossible
+rather than individually patched. Every stage after extraction is
+deterministic code, and no score can exist without validated, admissible
+evidence behind it.
 
 </Field>
 
 <Field label="Tradeoffs">
 
-Owning SSRF protection means owning its correctness and keeping it
-current as new bypass techniques surface, instead of delegating that
-responsibility to a vendor.
+Two engines now run side by side, which is real operational cost. I
+accepted it so users were never forced onto a materially sparser report
+without warning during the rollout.
 
 </Field>
 
@@ -119,97 +195,454 @@ responsibility to a vendor.
 
 <CaseStudyCallout
   kind="decision"
-  title="Keep the scoring engine deterministic and separate from AI-assisted analysis"
+  title="Report Coverage and Confidence instead of an overall company score"
 >
 
 <Field label="Problem">
 
-Investors and founders need a score they can trust, compare across
-companies, and reproduce — not a number that might change if the same
-startup were re-evaluated by a language model tomorrow.
+A single 0–100 number compresses "how much evidence exists" and "how
+reliable that evidence is" into one figure. The result implies certainty
+the public evidence often doesn't support.
 
 </Field>
 
 <Field label="Alternatives">
 
-Score companies primarily through LLM prompting, or blend AI output
-directly into the numeric score.
+Aggregate the six pillars into an overall score, as the legacy engine
+does.
 
 </Field>
 
 <Field label="Why">
 
-A fixed, weighted, six-pillar formula is explainable and stable: an
-investor can see exactly why a company scored the way it did, and the
-same inputs always produce the same score. AI is used for research and
-interpretation, not to move the number.
+**Evidence Coverage** measures how much of the methodology the evidence
+could actually assess. **Confidence** measures how reliable the evidence
+behind the published pillars is. They are different questions, so they
+are reported separately.
+
+Each pillar must pass two independent gates to publish: a minimum
+weighted coverage, and a minimum number of scored dimensions. The second
+gate stops one heavily weighted dimension from representing a whole
+pillar. A pillar that fails is shown as "Assessment withheld," explicitly
+not as a negative assessment. The company-level picture has its own
+equivalent gates.
 
 </Field>
 
 <Field label="Tradeoffs">
 
-Qualitative signal an AI model might notice has to stay advisory — in the
-analysis and narrative around a company — rather than directly changing
-its score.
+A report with withheld pillars is harder to read than a single number,
+and when public evidence is thin, low Coverage is the intended outcome.
+The methodology's weights and thresholds are also still documented as
+provisional calibration values, which is part of why an overall score
+was deliberately deferred.
 
 </Field>
 
 </CaseStudyCallout>
 
-Additional engineering decisions behind VentureGPS — for example, the
-specific data model behind the Startup Profile and the tradeoffs in its
-analytics layer — will be documented here as they're written up in more
-detail.
+<CaseStudyCallout
+  kind="decision"
+  title="Give the new engine its own independently managed migration boundary"
+>
+
+<Field label="Problem">
+
+Evidence Engine v1 needed persistence in a database already shared by
+the legacy tables and by the separately versioned VentureGPS V2 schema.
+
+</Field>
+
+<Field label="Alternatives">
+
+Add columns to the legacy schema, or place the new table inside V2's
+existing Alembic environment.
+
+</Field>
+
+<Field label="Why">
+
+V2's migration environment is scoped to its own `v2` schema, and
+downgrading it to base drops that entire schema. An unrelated table must
+never share that lifecycle.
+
+A second, minimal Alembic environment owns exactly one table and has its
+own version table. It runs manually rather than at application startup,
+and no foreign key crosses into legacy or V2 tables. Migration tests check
+that it never touches either.
+
+</Field>
+
+<Field label="Tradeoffs">
+
+There are now three migration boundaries to operate: legacy, V2, and
+Evidence Engine v1. Each deployment that changes one must run it
+deliberately.
+
+</Field>
+
+</CaseStudyCallout>
+
+<CaseStudyCallout
+  kind="decision"
+  title="Make the server, not the client, the feature-flag authority"
+>
+
+<Field label="Problem">
+
+The new engine had to reach production without risking the existing
+analysis flow, and without letting a client unlock it on its own.
+
+</Field>
+
+<Field label="Alternatives">
+
+Gate the engine in the frontend only, or replace the legacy engine
+outright.
+
+</Field>
+
+<Field label="Why">
+
+`resolve_engine()` is the single place engine selection is decided. It
+re-reads the `EVIDENCE_V1_ENABLED` environment flag on every request. An
+unset or unrecognized value fails closed to the legacy engine, and so does
+a request for Evidence Engine v1 while the flag is off. The frontend reads
+the flag to decide which form to show, but that is never the
+authorization boundary.
+
+Evidence Engine v1 first shipped to production as an explicit beta
+opt-in checkbox. The current code removes that checkbox. When the server
+reports the flag as on, a new analysis uses a website-only form that
+always requests Evidence Engine v1, and the server still re-validates the
+flag on every request. If the flag is off, or the frontend can't read it,
+the original multi-source form and the legacy engine are used instead.
+Founder re-analysis always uses the legacy engine.
+
+</Field>
+
+<Field label="Tradeoffs">
+
+The flag is one global boolean. There is no percentage rollout or
+per-user allowlist, so release control is manual.
+
+</Field>
+
+</CaseStudyCallout>
+
+<CaseStudyCallout
+  kind="decision"
+  title="Treat server-side website retrieval as a security boundary"
+>
+
+<Field label="Problem">
+
+Analyzing a user-supplied website means the server fetches a URL it
+doesn't control. Unprotected, that path can be abused to reach internal
+services or cloud metadata endpoints (SSRF).
+
+</Field>
+
+<Field label="Alternatives">
+
+Fetch whatever URL is submitted and rely on downstream code to behave,
+or delegate fetching to a third-party service.
+
+</Field>
+
+<Field label="Why">
+
+Owning retrieval keeps control over what it can reach. The fetcher:
+
+- allows only approved URL schemes
+- rejects private, loopback, link-local, and cloud-metadata addresses
+- pins DNS resolution against rebinding
+- limits redirects
+- caps response size
+
+Dedicated security tests cover it. Evidence Engine v1 reuses this fetcher
+unchanged rather than building a second, weaker one.
+
+</Field>
+
+<Field label="Tradeoffs">
+
+Owning SSRF protection means owning its correctness as new bypass
+techniques appear.
+
+</Field>
+
+</CaseStudyCallout>
 
 </CaseStudySection>
 
 <CaseStudySection id="production-engineering" title="Production Engineering">
 
-Known production-engineering evidence for VentureGPS centers on the
-ingestion boundary: the `/analyze-website` endpoint that accepts a
-startup's website URL is SSRF-hardened and backed by dedicated security
-tests, rather than left as an open fetch. The backend intelligence layer —
-scoring, readiness summaries, analysis, search, and analytics — sits
-behind the Next.js frontend as a distinct service boundary.
+### Security and failure behavior
 
-Further production-engineering detail, such as deployment and
-observability specifics, will be added here as it's documented.
+- **Ownership-scoped retrieval.** Reports are looked up by an
+  application-generated UUID and checked against the authenticated
+  caller's identity. A non-owner and a nonexistent ID get the same 404, so
+  probing IDs reveals nothing about what exists.
+- **Fail-closed configuration.** Provider credentials are checked before
+  any provider object is constructed. The missing variable's name is
+  logged server-side only; the client gets a generic message.
+- **No leaked internals.** A provider or pipeline exception is caught at
+  the service boundary and mapped to a generic retry message. The client
+  never sees a stack trace or a credential fragment.
+- **Honest persistence failures.** If the analysis succeeds but the
+  database write fails, the user is told it couldn't be saved, rather than
+  being shown a result that doesn't exist anywhere.
+- **Safe rendering.** Untrusted retrieved text is rendered as plain text,
+  never as HTML.
+
+### Testing and validation
+
+The path to production was staged, and each layer answers a different
+question:
+
+1. **Mocked automated tests.** The Evidence Engine has its own offline
+   test suite in which every provider is mocked and no external call is
+   made. Separate integration tests cover engine selection, error mapping,
+   and ownership-scoped retrieval, including the cross-user 404. Migration
+   tests check that the new table never touches legacy or V2 schemas. CI
+   on GitHub Actions runs the product-integration and SSRF tests along with
+   the frontend checks.
+2. **Controlled live provider evaluations.** Small, deliberate runs
+   against real companies, using real Tavily and OpenAI calls and executed
+   in isolation from the product. Their purpose was to find failure modes
+   mocked tests can't. This is how the semantic-fit gap below was found.
+3. **Local integration testing.** The full product flow was exercised
+   through a real, authenticated browser against a local backend before
+   any shared environment was touched.
+4. **Production smoke testing.** The production rollout was sequenced:
+   migrate, deploy with the flag off, verify the baseline, enable the flag,
+   then run exactly one real, paid, authenticated analysis (Notion) on the
+   live application. That run was then checked against production itself:
+   persistence, report rendering, reload without a second run, mobile
+   layout, and an unauthenticated request rejected with a 401.
+
+That single production analysis took **39.46 seconds** end to end. It
+produced 13.2% Evidence Coverage with High Confidence, and was *withheld*
+at company level. Withholding is the intended behavior: a few well-sourced
+pillars justify confidence in what was published, but not a
+company-level assessment.
+
+These are validation records, not usage metrics. VentureGPS doesn't
+publish traffic or adoption figures.
 
 </CaseStudySection>
 
 <CaseStudySection id="ai-engineering" title="AI Engineering">
 
-VentureGPS treats AI as probabilistic infrastructure, not an authority
-over the platform's core numbers. The scoring pillars, weights, and
-stage-aware logic are deterministic business rules — AI is used for
-research and interpretation *around* a company, not to compute or
-override its score.
+The rule throughout VentureGPS's newer architecture is: **probabilistic
+components propose, research, and structure evidence; deterministic
+software validates that evidence and owns every scoring and publication
+decision.** This is enforced in code, not in prompt instructions.
 
-That distinction matters for anyone evaluating the platform: an investor
-who disagrees with an AI-generated summary can still trust the score
-underneath it, because the score isn't something the AI produced.
+- **AI proposes claims; it can't make them true.** An extraction call
+  proposes a typed fact and the excerpt it came from. Deterministic code
+  confirms the excerpt is really in the retrieved page before the claim
+  can exist.
+- **Schema-valid isn't the same as correct.** Structured outputs
+  guarantee shape, not meaning. A separate semantic-fit check verifies
+  that the cited text supports the specific category chosen.
+- **No model call computes a score.** Pillar scores, Coverage,
+  Confidence, and publish/withhold decisions are plain Python arithmetic.
+  Two runs over the same validated evidence always produce the same
+  numbers.
+- **Prompts reinforce; code enforces.** The extraction prompt includes
+  negative examples of known mistakes, but the deterministic gates are the
+  correctness boundary, not the prompt.
+
+The architecture is also explicit about what it doesn't guarantee.
+Deterministic scoring makes the math *reproducible*; it can't make the
+AI's proposed claims *correct*. That's why the report separates the
+validated evidence from the score computed from it, and why every claim
+links back to its source.
 
 </CaseStudySection>
 
 <CaseStudySection id="failures-debugging" title="Real Failures & Debugging">
 
-Specific, verified debugging incidents for VentureGPS aren't documented in
-this portfolio yet. Rather than invent a plausible-sounding story, this
-section is left structured and empty until a real incident — symptom,
-investigation, root cause, fix, verification, and lesson — can be written
-up the same way the Economic Intelligence case study is.
+<CaseStudyCallout
+  kind="failure"
+  title="A Retention score of 7.0 with no supporting facts"
+>
+
+<Field label="Symptom">
+
+In the legacy engine, the Retention dimension kept an LLM-produced score
+of **7.0** even though no structured facts had been extracted to support
+it. The result was a confident number with no grounded evidence behind
+it.
+
+</Field>
+
+<Field label="Root cause">
+
+Retention was supposed to be scored by rule from extracted facts, never
+by LLM judgment. But the override step that enforced this had a path where
+the original LLM score passed through unchanged. Underneath that, one
+probabilistic call was deciding both whether evidence was sufficient and
+what the number should be.
+
+</Field>
+
+<Field label="Investigation">
+
+The case surfaced during a live run of the scoring pipeline. A
+post-implementation review recorded it as a blocker and traced it to the
+override step's pass-through path.
+
+</Field>
+
+<Field label="Correction">
+
+The override was made fail-closed. Every rule-scored dimension is now
+always rewritten, either to a score computed in Python from structured
+facts, or to no score at all, marked "Unavailable." There is no longer any
+path where an LLM's number survives for one of these dimensions.
+
+</Field>
+
+<Field label="Verification">
+
+Regression tests reproduce the exact case: a confident evidence stage
+("strong renewal language") with no NRR, GRR, or churn figure, and a
+Retention score of 7.0, must come out with no score. Further tests assert the
+same fail-closed behavior for every rule-scored dimension, not just
+Retention.
+
+</Field>
+
+<Field label="Lesson">
+
+The fix was correct but reactive. It closed one instance after it was
+found. Nothing in the architecture *required* evidence before a score
+could exist, and missing evidence could still look like weak evidence.
+Building Evidence Engine v1 was the architectural answer.
+
+</Field>
+
+</CaseStudyCallout>
+
+<CaseStudyCallout
+  kind="failure"
+  title="Schema-valid claims that the evidence didn't support"
+>
+
+<Field label="Symptom">
+
+In controlled live evaluations of Evidence Engine v1, two claims about
+Notion passed every existing check and reached scored dimensions without
+being supported by their sources:
+
+- A "90% multiplayer usage" adoption statistic was tagged as **strong
+  retention**.
+- A bare list of competitors was tagged as a **fragmented market**.
+
+</Field>
+
+<Field label="Root cause">
+
+The existing checks verified *structure*: required fields were present
+and values came from the allowed vocabulary. Nothing verified that the
+cited excerpt supported the *specific* value chosen. The same review
+found a related ordering defect. A routing check ran before deterministic
+normalization, such as turning `"52M"` into a number, so legitimate
+evidence could be discarded too early.
+
+</Field>
+
+<Field label="Investigation">
+
+Two controlled live runs (Fish Audio and Notion) were analyzed side by
+side against the extraction contract, with the implementation frozen
+before and between runs. The same unmodified readiness checks were
+re-applied to earlier runs' preserved claims to separate real improvements
+from new false positives.
+
+</Field>
+
+<Field label="Correction">
+
+A deterministic semantic-fit gate was added. Strong retention now
+requires explicit retention, renewal, or churn wording. A fragmented or
+concentrated market now requires explicit wording about market structure.
+
+Rules were added only for the two categories with a confirmed real
+failure. Every other category was reviewed and left without a rule, with
+the reason documented, rather than guessed at.
+
+Rejected claims stay in the ledger with their provenance, and receive a
+distinct status that's separate from "insufficient structure." A
+canonicalization step now runs before routing.
+
+</Field>
+
+<Field label="Verification">
+
+Regression tests are built from the real failing excerpts. A separate
+test confirms the semantic decision doesn't change based on which company
+is being analyzed.
+
+An independent live run on Notion then reproduced the competitor-list
+false positive, and the new gate caught it with no manual intervention.
+Company Coverage fell from 17.0% to 9.0%. That was the correct result,
+because the earlier figure had been inflated by unsupported evidence.
+
+</Field>
+
+<Field label="Lesson">
+
+Structured output proves shape, not meaning, so it needs a separate
+deterministic check. Rules work best when derived from confirmed failures
+rather than hypothetical ones. And a lower number can be the right
+outcome: a system that lowers Coverage by refusing bad evidence is doing
+its job.
+
+</Field>
+
+</CaseStudyCallout>
 
 </CaseStudySection>
 
 <CaseStudySection id="scaling-evolution" title="Scaling & Evolution">
 
-VentureGPS's split between a deterministic scoring core and an
-AI-assisted research and interpretation layer is also a scaling decision:
-the two can evolve independently. The scoring methodology can be revised —
-new pillars, adjusted weights, additional stages — without touching how
-AI-assisted research is generated, and vice versa.
+### Known limitations
 
-No production-scale metrics are published here, because none have been
-verified for this portfolio.
+These are documented in the project itself, not discovered by outside
+review:
+
+- **Synchronous analysis.** An Evidence Engine v1 analysis runs inside
+  the HTTP request, at roughly 40 seconds in the measured production run.
+  That's acceptable for a beta, but it isn't a scale-tested latency
+  target.
+- **Limited input types.** Evidence Engine v1 accepts only a company name
+  and website. Only the legacy engine supports pitch decks and free-form
+  text, and it also handles founder re-analysis.
+- **Observability gaps.** Logging is stdout-based. Per-analysis token
+  usage and cost instrumentation are not yet in production.
+- **Evaluation depth.** Validation so far combines a small calibration
+  harness with point-in-time live evaluations, not a repeatable
+  multi-company regression dataset.
+- **Evidence recall.** Public sources often omit an exact date for a
+  figure, and the engine correctly declines to invent one. That keeps
+  Coverage low for many companies.
+
+### Future work
+
+None of the following is implemented today:
+
+- Asynchronous job execution, if real usage makes a ~40-second request a
+  problem.
+- Token, cost, and per-stage timing instrumentation.
+- A real production evaluation dataset that serves as a repeatable
+  regression gate.
+- Broader source discovery, and additional Evidence Engine input types.
+
+No production traffic, scale, or adoption metrics are published here,
+because none have been verified for this portfolio.
 
 </CaseStudySection>
